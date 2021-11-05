@@ -1,0 +1,116 @@
+---
+title: "crosstalk demo - NPS campgrounds"
+author: "Sarah Wright"
+date: "11/5/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(httr)
+library(jsonlite)
+library(tidyverse)
+library(crosstalk)
+library(leaflet)
+library(DT)
+library(reactable)
+library(plotly)
+# library(summarywidget)  # Couldn't get this one to work properly, but you can install using devtools::install_github("kent37/summarywidget")
+
+# Get NPS campground locations from AGOL
+# service_url = "https://mapservices.nps.gov/arcgis/rest/services/NationalDatasets/NPS_Public_POIs_Geographic/FeatureServer"
+# resp <- GET(paste0(service_url, "/0/query"),
+#             query = list(where="POITYPE='Campground'",
+#                          outFields="*",
+#                          f="JSON"))
+# campgrounds <- fromJSON(content(resp, type = "text", encoding = "UTF-8"))
+# campgrounds <- cbind(campgrounds$features$attributes, campgrounds$features$geometry) %>%
+# as_tibble()
+campgrounds <- read_csv("campgrounds.csv")
+```
+
+# Map of campgrounds
+
+```{r map}
+# Create a shared data object for the map
+campgrounds_map <- SharedData$new(campgrounds %>%
+                                    select(UNITCODE, UNITNAME, MAPLABEL, SEASONAL, SEASDESC, x, y), 
+                                  group = "campgrounds-map")
+
+# Create a shared data object for the table
+campgrounds_table <- SharedData$new(campgrounds %>%
+                                      select(UNITCODE, MAPLABEL, SEASONAL, SEASDESC), 
+                                    group = "campgrounds-map")
+
+# Make a park filter
+park_filter <- filter_select("park", "Park", campgrounds_map, group = ~UNITNAME)
+
+# Make a map
+# With ParkTiles!
+# Make NPS map Attribution
+NPSAttrib <-
+  htmltools::HTML(
+    "<a href='https://www.nps.gov/npmap/disclaimer/'>Disclaimer</a> |
+      &copy; <a href='http://mapbox.com/about/maps' target='_blank'>Mapbox</a>
+      &copy; <a href='http://openstreetmap.org/copyright' target='_blank'>OpenStreetMap</a> contributors |
+      <a class='improve-park-tiles'
+      href='http://insidemaps.nps.gov/places/editor/#background=mapbox-satellite&map=4/-95.97656/39.02772&overlays=park-tiles-overlay'
+      target='_blank'>Improve Park Tiles</a>"
+  )
+
+NPSbasic = "https://atlas-stg.geoplatform.gov/styles/v1/atlas-user/ck58pyquo009v01p99xebegr9/tiles/256/{z}/{x}/{y}@2x?access_token=pk.eyJ1IjoiYXRsYXMtdXNlciIsImEiOiJjazFmdGx2bjQwMDAwMG5wZmYwbmJwbmE2In0.lWXK2UexpXuyVitesLdwUg"
+NPSimagery = "https://atlas-stg.geoplatform.gov/styles/v1/atlas-user/ck72fwp2642dv07o7tbqinvz4/tiles/256/{z}/{x}/{y}@2x?access_token=pk.eyJ1IjoiYXRsYXMtdXNlciIsImEiOiJjazFmdGx2bjQwMDAwMG5wZmYwbmJwbmE2In0.lWXK2UexpXuyVitesLdwUg"
+NPSslate = "https://atlas-stg.geoplatform.gov/styles/v1/atlas-user/ck5cpvc2e0avf01p9zaw4co8o/tiles/256/{z}/{x}/{y}@2x?access_token=pk.eyJ1IjoiYXRsYXMtdXNlciIsImEiOiJjazFmdGx2bjQwMDAwMG5wZmYwbmJwbmE2In0.lWXK2UexpXuyVitesLdwUg"
+NPSlight = "https://atlas-stg.geoplatform.gov/styles/v1/atlas-user/ck5cpia2u0auf01p9vbugvcpv/tiles/256/{z}/{x}/{y}@2x?access_token=pk.eyJ1IjoiYXRsYXMtdXNlciIsImEiOiJjazFmdGx2bjQwMDAwMG5wZmYwbmJwbmE2In0.lWXK2UexpXuyVitesLdwUg"
+
+map <- leaflet(campgrounds_map) %>%
+  leaflet::addTiles(group = "Basic", urlTemplate = NPSbasic, attribution = NPSAttrib) %>%
+  leaflet::addTiles(group = "Imagery", urlTemplate = NPSimagery, attribution = NPSAttrib) %>%
+  leaflet::addTiles(group = "Slate", urlTemplate = NPSslate, attribution = NPSAttrib) %>%
+  leaflet::addTiles(group = "Light", urlTemplate = NPSlight, attribution = NPSAttrib) %>%
+  leaflet::addLayersControl(baseGroups = c("Basic", "Imagery", "Slate", "Light"),
+                            options=leaflet::layersControlOptions(collapsed = TRUE)) %>%
+  addMarkers(lng = ~x, lat = ~y,
+             popup = ~MAPLABEL)
+
+# Make a table
+# tbl <- datatable(campgrounds_table,
+#                  extensions="Scroller", style="bootstrap", class="compact", width="100%",
+#                  options=list(deferRender=TRUE, scrollY=300, scroller=TRUE))
+tbl <- reactable(campgrounds_table,
+                 pagination = FALSE,
+                 height = 350,
+                 selection = "multiple",
+                 onClick = "select")
+
+# Display the map and table side by side
+bscols(map, list(park_filter, tbl))
+```
+
+# Plot of campgrounds per park
+
+```{r plt}
+campgrounds_plot <- SharedData$new(campgrounds %>%
+                                     select(UNITCODE, REGIONCODE) %>%
+                                     group_by(UNITCODE, REGIONCODE) %>%
+                                     summarise(CAMPGROUNDCOUNT = n(), .groups = "keep") %>%
+                                     ungroup() %>%
+                                     arrange(desc(CAMPGROUNDCOUNT)),
+                                   group = "campgrounds-plot")
+
+count_slider <- filter_slider("count", "Campground count", campgrounds_plot, column = ~CAMPGROUNDCOUNT)
+region_filter <- filter_select("region", "Region", campgrounds_plot, group = ~REGIONCODE)
+
+count_plot <- plot_ly(campgrounds_plot,
+                      x = ~UNITCODE,
+                      y = ~CAMPGROUNDCOUNT,
+                      color = ~REGIONCODE,
+                      type = "bar",
+                      width = 900) %>%
+  layout(xaxis = list(title = "Park", type = "category", dtick = 1, tickfont = list(size = 9), categoryorder = "total descending"),
+         yaxis = list(title = "Number of Campgrounds"),
+         legend = list(orientation = 'h', x = 0, y = 1.1),
+         margin = list(b = 40))
+
+bscols(count_slider, region_filter); count_plot
+```
